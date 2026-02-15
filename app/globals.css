@@ -1,0 +1,14 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --medledger-teal: #0d9488;
+  --medledger-teal-dark: #0f766e;
+  --medledger-slate: #0f172a;
+  --medledger-slate-light: #1e293b;
+}
+
+body {
+  @apply bg-medledger-slate text-slate-100 antialiased;
+}
