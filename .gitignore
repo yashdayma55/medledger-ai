@@ -14,6 +14,11 @@ out/
 # production
 /build
 
+# Cursor IDE (do not commit project config)
+.cursor/
+.cursorrules
+*.mdc
+
 # misc
 .DS_Store
 *.pem
