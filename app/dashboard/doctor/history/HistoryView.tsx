@@ -6,10 +6,7 @@ import {
   getPatientHistory,
   type DateRangeFilter,
 } from "./actions";
-import {
-  HistoryChatPanel,
-  buildContextFromEncounters,
-} from "./HistoryChatPanel";
+import { HistoryChatPanel } from "./HistoryChatPanel";
 import type {
   Encounter,
   HistoryEventType,
@@ -362,7 +359,7 @@ export function HistoryView() {
         {showChatPanel && (
           <div className="w-[380px] shrink-0 flex flex-col min-h-0">
             <HistoryChatPanel
-              contextText={buildContextFromEncounters(encounters)}
+              patientUserId={selectedPatientId}
               patientName={patientName}
               onClose={() => setShowChatPanel(false)}
             />
