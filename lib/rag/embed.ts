@@ -34,17 +34,25 @@ function isGeminiEmbedding(): boolean {
   return !process.env.OPENAI_API_KEY?.trim();
 }
 
-function geminiProviderOptions() {
+type EmbedTask = "document" | "query";
+
+function geminiProviderOptions(task: EmbedTask = "document") {
   return {
     google: {
       outputDimensionality: EMBEDDING_DIMENSIONS,
-      taskType: "RETRIEVAL_DOCUMENT" as const,
+      taskType:
+        task === "query"
+          ? ("RETRIEVAL_QUERY" as const)
+          : ("RETRIEVAL_DOCUMENT" as const),
     },
   };
 }
 
 /** Embed a single string into a 1536-dim vector. */
-export async function embedText(text: string): Promise<number[]> {
+export async function embedText(
+  text: string,
+  opts?: { task?: EmbedTask }
+): Promise<number[]> {
   const model = getEmbeddingModel();
   if (!model) {
     throw new Error(
@@ -52,10 +60,11 @@ export async function embedText(text: string): Promise<number[]> {
     );
   }
 
+  const task = opts?.task ?? "query";
   const { embedding } = await embed({
     model,
     value: text,
-    ...(isGeminiEmbedding() ? { providerOptions: geminiProviderOptions() } : {}),
+    ...(isGeminiEmbedding() ? { providerOptions: geminiProviderOptions(task) } : {}),
   });
 
   return normalizeEmbedding(embedding);
@@ -75,7 +84,9 @@ export async function embedTexts(texts: string[]): Promise<number[][]> {
   const { embeddings } = await embedMany({
     model,
     values: texts,
-    ...(isGeminiEmbedding() ? { providerOptions: geminiProviderOptions() } : {}),
+    ...(isGeminiEmbedding()
+      ? { providerOptions: geminiProviderOptions("document") }
+      : {}),
   });
 
   return embeddings.map(normalizeEmbedding);
