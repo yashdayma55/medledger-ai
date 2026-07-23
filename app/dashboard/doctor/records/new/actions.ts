@@ -163,25 +163,37 @@ export async function saveMedicalRecord(formData: FormData): Promise<never> {
     }
   }
 
-  const { error: insertError } = await db.from("patient_medical_records").insert({
-    patient_user_id: patientUserId,
-    provider_user_id: session.sub,
-    title,
-    record_date: recordDate,
-    summary,
-    fhir_lite_json: payload as unknown as Record<string, unknown>,
-    source_file: sourceFile,
-    extracted_at: new Date().toISOString(),
-    confidence_score: getNum(formData, "confidence_score"),
-  });
+  const { data: inserted, error: insertError } = await db
+    .from("patient_medical_records")
+    .insert({
+      patient_user_id: patientUserId,
+      provider_user_id: session.sub,
+      title,
+      record_date: recordDate,
+      summary,
+      fhir_lite_json: payload as unknown as Record<string, unknown>,
+      source_file: sourceFile,
+      extracted_at: new Date().toISOString(),
+      confidence_score: getNum(formData, "confidence_score"),
+    })
+    .select("id")
+    .single();
 
-  if (insertError) {
+  if (insertError || !inserted) {
     console.error("Record insert error:", insertError);
     const message =
-      insertError.message?.includes("column")
+      insertError?.message?.includes("column")
         ? "Database schema may be outdated. Run Supabase migrations (e.g. 004_record_source_file.sql)."
-        : insertError.message?.slice(0, 200) || "Failed to save record.";
+        : insertError?.message?.slice(0, 200) || "Failed to save record.";
     redirect("/dashboard/doctor/records/new?error=" + encodeURIComponent(message));
+  }
+
+  // Best-effort RAG indexing — never block the doctor's save on embeddings failures
+  try {
+    const { indexMedicalRecord } = await import("@/lib/rag/index-record");
+    await indexMedicalRecord(inserted.id as string);
+  } catch (err) {
+    console.error("RAG index failed (record still saved):", err);
   }
 
   redirect("/dashboard/doctor?success=record_created");
