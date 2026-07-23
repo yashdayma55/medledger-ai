@@ -40,7 +40,7 @@ function groundingNote(
     const date = dateMatch?.[1] ?? "unknown date";
     return `${date} / ${c.chunk_type}`;
   });
-  const unique = [...new Set(sources)];
+  const unique = Array.from(new Set(sources));
   return `\n\nSources consulted: ${unique.join("; ")}.`;
 }
 

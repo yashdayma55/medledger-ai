@@ -9,7 +9,8 @@
     "lint": "next lint",
     "test:pdf": "tsx scripts/test-pdf-parse.ts",
     "test:pdf:text": "tsx scripts/test-pdf-parse.ts -- --text-only",
-    "backfill:embeddings": "tsx scripts/backfill-embeddings.ts"
+    "backfill:embeddings": "tsx scripts/backfill-embeddings.ts",
+    "verify:rag": "tsx scripts/verify-rag-retrieval.ts"
   },
   "dependencies": {
     "@ai-sdk/azure": "^3.0.30",
