@@ -67,7 +67,7 @@
 | **Link or create patient** | Search existing patients by email or create a new patient profile |
 | **Parse from PDF** | Upload a medical record PDF → unpdf extracts text → AI (OpenAI/Gemini) extracts structured fields → auto-fills form with validation and confidence score |
 | **Patient history** | Select a patient → view **filterable timeline** (date range, event type, "only abnormal," search) → expand encounters → detail panel with labs, medications, conditions, notes, documents |
-| **AI Summary chat** | Quick bullet-point summary of patient history; ask follow-up questions (e.g. "What are the current medications?") — uses full history as context |
+| **AI Summary chat** | Quick bullet-point summary of patient history; ask follow-up questions — powered by a RAG pipeline that retrieves only the most relevant chunks of a patient's history (via pgvector similarity search) instead of stuffing the entire history into the prompt. Responses include a "Sources consulted" line with date/section grounding. |
 
 ### For Super Admins
 
@@ -88,12 +88,14 @@
 | | Tailwind CSS 3.4 | Styling |
 | **Backend** | Next.js Server Actions | Mutations, API logic |
 | | Supabase (PostgreSQL) | Database, realtime (optional) |
+| | pgvector extension | Vector embeddings for RAG retrieval |
 | **Auth** | Session cookie (HTTP-only) | JWT signed with jose (HS256) |
 | | bcryptjs | Password hashing |
 | **Email** | Resend | OTP, password reset, verification emails |
 | **AI** | Vercel AI SDK | `generateObject`, `streamText` |
 | | OpenAI (gpt-4o-mini) | Primary for PDF extraction & chat |
 | | Google Gemini (gemini-2.0-flash) | Fallback when OpenAI key not set |
+| | OpenAI `text-embedding-3-small` / Gemini `text-embedding-004` | Embeddings for RAG chunk retrieval (same OpenAI-first fallback pattern as chat) |
 | **PDF parsing** | unpdf | Text extraction from PDF |
 | | Zod | Schema validation for AI output |
 | **Deployment** | Vercel | GitHub-linked, auto-deploy on push |
@@ -131,6 +133,7 @@ flowchart TB
     PDF[PDF Ingestion\nunpdf + AI extraction]
     History[Doctor History\nTimeline, encounters]
     Chat[AI Summary Chat]
+    RAG[RAG Pipeline\nchunk, embed, retrieve]
   end
 
   subgraph external["External Services"]
@@ -156,6 +159,9 @@ flowchart TB
   History --> Supabase
   Chat --> AI
   Chat --> Supabase
+  Chat --> RAG
+  RAG --> Supabase
+  RAG --> AI
 ```
 
 ### Data Flow Summary
@@ -163,7 +169,7 @@ flowchart TB
 | Actor | Path |
 |-------|------|
 | **Patient** | Browser → Auth (login/register/OTP) → Resend for email; Dashboard → Server Actions → Supabase (read medical history) |
-| **Doctor** | Browser → Auth → Resend; Dashboard → Create record (form or PDF → unpdf + AI → form) → Supabase; Patient history → Server Actions → Supabase (timeline) + AI (summary chat) |
+| **Doctor** | Browser → Auth → Resend; Dashboard → Create record (form or PDF → unpdf + AI → form) → Supabase; Patient history → Server Actions → Supabase (timeline); AI Summary chat → RAG pipeline (embed query → retrieve top-K chunks from Supabase/pgvector) → AI (grounded answer) |
 | **Admin** | Browser → Auth → Dashboard → Server Actions → Supabase (verify/reject providers, stats) |
 
 ---
@@ -213,6 +219,11 @@ medledger-ai/
 │   │   ├── map-to-prefill.ts   # Map extracted JSON → form payload
 │   │   ├── parser.ts           # unpdf text extraction
 │   │   └── schema.ts           # Zod schemas for AI output
+│   ├── rag/
+│   │   ├── embed.ts             # Embedding client (OpenAI-first, Gemini fallback)
+│   │   ├── chunk.ts             # Chunk a record's fhir_lite_json into sections
+│   │   ├── index-record.ts      # Chunk + embed + upsert into record_chunks
+│   │   └── retrieve.ts          # Embed query, call match_record_chunks RPC
 │   ├── supabase/
 │   │   └── server.ts           # Server Supabase client
 │   ├── types/
@@ -227,9 +238,12 @@ medledger-ai/
 │       ├── 003_super_admin_schema.sql  # admin_profile, RBAC, audit
 │       ├── 004_record_source_file.sql  # source_file, extracted_at, confidence_score
 │       ├── 005_wipe_all_users.sql      # Utility (dev)
+│       ├── 006_rag_embeddings.sql      # pgvector, record_chunks table, match_record_chunks fn
 │       └── RUN_ME_create_patient_medical_records.sql  # Standalone if table missing
 ├── scripts/
-│   └── test-pdf-parse.ts       # CLI test for PDF extraction
+│   ├── test-pdf-parse.ts       # CLI test for PDF extraction
+│   ├── backfill-embeddings.ts  # Index all existing records into record_chunks
+│   └── verify-rag.ts           # CLI smoke test for retrieval
 ├── .env.example
 ├── next.config.js
 ├── package.json
@@ -253,6 +267,7 @@ medledger-ai/
 | **patient_profile** | `user_id`, demographics (name, DOB, gender, contact, address, MRN) |
 | **provider_profile** | `user_id`, NPI, specialty, facility, verification_status, etc. |
 | **patient_medical_records** | `patient_user_id`, `provider_user_id`, `title`, `record_date`, `summary`, `fhir_lite_json` (JSONB), `source_file`, `extracted_at`, `confidence_score` |
+| **record_chunks** | `record_id`, `patient_user_id`, `chunk_type`, `chunk_text`, `embedding` (vector(1536)), `created_at` — one row per semantic chunk of a medical record, used for RAG retrieval via the `match_record_chunks` SQL function (cosine similarity, IVFFlat index) |
 | **admin_profile** | `user_id`, superuser flag, audit fields |
 
 ### Enums
@@ -294,8 +309,9 @@ Copy `.env.example` to `.env.local` and fill in values.
 
 | Variable | Description |
 |----------|-------------|
-| `OPENAI_API_KEY` | OpenAI API key (used first if set) |
-| `GEMINI_API_KEY` or `GOOGLE_GENERATIVE_AI_API_KEY` | Gemini API key (fallback if OpenAI not set) |
+| `OPENAI_API_KEY` | OpenAI API key — used for PDF extraction, chat, **and RAG embeddings** (used first if set) |
+| `GEMINI_API_KEY` or `GOOGLE_GENERATIVE_AI_API_KEY` | Gemini API key — fallback for all of the above if OpenAI not set |
+| `RAG_MATCH_COUNT` | Number of chunks retrieved per query for RAG (optional, defaults to 8) |
 
 ### Optional (email)
 
@@ -334,8 +350,19 @@ npm install
    - `supabase/migrations/002_patient_medical_records.sql`
    - `supabase/migrations/003_super_admin_schema.sql`
    - `supabase/migrations/004_record_source_file.sql`
+   - `supabase/migrations/006_rag_embeddings.sql` (enables `pgvector`, creates `record_chunks` and `match_record_chunks`)
 3. If `patient_medical_records` is missing, run `RUN_ME_create_patient_medical_records.sql`
 4. Copy from **Project Settings → API**: URL, anon key, service_role key
+
+### 2a. Backfill embeddings (if importing existing data)
+
+If you're setting up against a database that already has medical records (e.g. restoring from a backup or migrating from another project), run the backfill script after `npm install` and environment setup so existing records get indexed for RAG retrieval:
+
+```bash
+npm run backfill:embeddings
+```
+
+New records created after setup are indexed automatically on save — this is only needed for pre-existing data.
 
 ### 3. Resend
 
@@ -378,6 +405,8 @@ Open [http://localhost:3000](http://localhost:3000).
 | `npm run lint` | Run ESLint |
 | `npm run test:pdf` | Test PDF extraction (CLI script) |
 | `npm run test:pdf:text` | Test PDF extraction (text-only, no AI) |
+| `npm run backfill:embeddings` | Index all existing medical records into `record_chunks` for RAG retrieval |
+| `npm run verify:rag -- <patientUserId> "question"` | Smoke-test retrieval for a given patient and query |
 
 ---
 
@@ -394,7 +423,7 @@ Open [http://localhost:3000](http://localhost:3000).
 1. **Register** → Email, password, optional NPI → Verify email → Account **pending**
 2. **Login** → After admin approval, access provider dashboard
 3. **Create record** → Select patient (by email) or create new → Fill form **or** upload PDF → Click "Parse PDF" → AI fills form → Edit if needed → Save
-4. **Patient history** → Select patient → Apply filters (date, event type, abnormal only, search) → Expand encounters → Select for detail panel → Open **AI Summary chat** for summaries or questions
+4. **Patient history** → Select patient → Apply filters (date, event type, abnormal only, search) → Expand encounters → Select for detail panel → Open **AI Summary chat** — retrieves the most relevant chunks of that patient's history via RAG and answers with source grounding (record date/section) rather than scanning the entire history
 
 ### Super Admin
 
